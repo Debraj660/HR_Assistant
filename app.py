@@ -68,7 +68,7 @@ def get_agent():
 
 with st.sidebar:
 
-    st.header("📁 Admin")
+    st.header("Admin")
 
     st.divider()
 
@@ -112,7 +112,7 @@ with st.sidebar:
         else:
 
             if st.button(
-                "⬆️ Upload & Index",
+                "Upload",
                 type="primary",
                 use_container_width=True,
             ):
@@ -157,9 +157,7 @@ with st.sidebar:
 
                     st.exception(e)
 
-    # ==================================================
     # DOCUMENT LIST
-    # ==================================================
 
     st.divider()
 
@@ -274,9 +272,7 @@ with st.sidebar:
                         st.exception(e)
 
 
-# ==================================================
 # INITIALIZE ASSISTANT
-# ==================================================
 
 try:
 
@@ -290,7 +286,7 @@ except Exception as e:
     )
 
     st.info(
-        "👈 Upload an HR document from the "
+        "Upload an HR document from the "
         "Admin section to start using the assistant."
     )
 
