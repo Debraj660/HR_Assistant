@@ -1,87 +1,323 @@
-"""Wires all the components together into one ready-to-use agent.
-
-This is the single entry point that main.py (CLI) and app.py (Streamlit)
-both call. Each step is handled by its own small module.
-"""
-
-
 from assistant import config
+
+
 from assistant.agent import create_hr_agent
-from assistant.doc_loader import load_documents
+
+
+from assistant.doc_loader import (
+    load_document_from_bytes,
+)
+
+
+from assistant.embeddings import (
+    get_embeddings_model,
+)
+
+
 from assistant.llm import get_llm
-from assistant.splitters import split_into_chunks
-from assistant.tools import create_search_tool
+
+
+from assistant.logger import get_logger
+
+
+from assistant.splitters import (
+    split_into_chunks,
+)
+
+
+from assistant.supabase_storage import (
+    download_document,
+    get_document,
+    list_documents,
+    upload_document,
+    delete_document,
+)
+
+
+from assistant.tools import (
+    create_search_tool,
+)
+
 
 from assistant.vector_store import (
-    build_vector_store,
+    add_documents_to_vector_store,
+    delete_document_from_vector_store,
     get_retriever,
     load_vector_store,
     vector_store_exists,
 )
 
 
-from assistant.logger import get_logger
 logger = get_logger(__name__)
 
 
-# data ingestion
+# ==================================================
+# Upload + index
+# ==================================================
 
-def build_vector_store_for_document(file_path: str = config.DATA_FILE_PATH):
+def add_uploaded_document(
+    filename: str,
+    file_bytes: bytes,
+):
+    """
+    Complete upload pipeline:
 
-    if vector_store_exists():
-        print("Found an existing Qdrant Cloud collection, connecting to it (fast, no re-embedding).")
-        logger.info("Qdrant Cloud collection already exists, reusing it")
-        return load_vector_store()
+    Streamlit
+        ↓
+    Supabase Storage
+        ↓
+    Download bytes
+        ↓
+    Document loader
+        ↓
+    Chunking
+        ↓
+    Qdrant
+    """
+
+    # ----------------------------------------------
+    # Upload to Supabase first
+    # ----------------------------------------------
+
+    document = upload_document(
+        filename=filename,
+        file_bytes=file_bytes,
+    )
+
+    document_id = document[
+        "id"
+    ]
+
+    try:
+
+        # ------------------------------------------
+        # Load document
+        # ------------------------------------------
+
+        documents = (
+            load_document_from_bytes(
+                file_bytes=file_bytes,
+                filename=filename,
+                document_id=document_id,
+            )
+        )
+
+        if not documents:
+
+            raise ValueError(
+                "The document contains no readable text."
+            )
+
+        # ------------------------------------------
+        # Split
+        # ------------------------------------------
+
+        chunks = split_into_chunks(
+            documents
+        )
+
+        if not chunks:
+
+            raise ValueError(
+                "The document produced no chunks."
+            )
+
+        logger.info(
+            "%s produced %d chunks.",
+            filename,
+            len(chunks),
+        )
+
+        # ------------------------------------------
+        # Add to Qdrant
+        # ------------------------------------------
+
+        add_documents_to_vector_store(
+            chunks
+        )
+
+        logger.info(
+            "Successfully indexed %s.",
+            filename,
+        )
+
+        return document
+
+    except Exception:
+
+        # ------------------------------------------
+        # Roll back Supabase upload if indexing
+        # fails.
+        # ------------------------------------------
+
+        logger.exception(
+            "Indexing failed for %s. "
+            "Rolling back Supabase document.",
+            filename,
+        )
+
+        try:
+
+            delete_document(
+                document_id
+            )
+
+        except Exception:
+
+            logger.exception(
+                "Failed to rollback Supabase document."
+            )
+
+        raise
 
 
-    print("No Qdrant Cloud collection found, building one from scratch...")
-    logger.info("No Qdrant Cloud collection found, building one from scratch")
-    documents = load_documents(file_path)
-    chunks = split_into_chunks(documents)
-    print(f"Loaded '{file_path}' and split it into {len(chunks)} chunks.")
+# ==================================================
+# Delete document
+# ==================================================
+
+def remove_document(
+    document_id: str
+):
+    """
+    Delete from BOTH:
+
+    1. Qdrant
+    2. Supabase Storage
+    3. Supabase PostgreSQL
+    """
+
+    document = get_document(
+        document_id
+    )
+
+    if not document:
+
+        raise ValueError(
+            "Document not found."
+        )
+
+    # ----------------------------------------------
+    # Delete vectors FIRST
+    # ----------------------------------------------
+
+    delete_document_from_vector_store(
+        document_id
+    )
+
+    # ----------------------------------------------
+    # Delete Supabase file + metadata
+    # ----------------------------------------------
+
+    delete_document(
+        document_id
+    )
+
+    logger.info(
+        "Completely removed document: %s",
+        document["filename"],
+    )
+
+    return document
 
 
-    vector_store = build_vector_store(chunks)
-    print("Vector store built and uploaded to Qdrant Cloud.")
-    return vector_store
-    
-# data retreival    
-    
-def build_hr_assistant(file_path: str = config.DATA_FILE_PATH):
-    """Build the full RAG agent, ready to answer questions."""
-    logger.info("Building HR assistant...")
+# ==================================================
+# List documents
+# ==================================================
+
+def get_all_documents():
+
+    return list_documents()
+
+
+# ==================================================
+# Build assistant
+# ==================================================
+
+def build_hr_assistant():
+
+    logger.info(
+        "Building HR assistant..."
+    )
+
     config.check_api_keys()
-    vector_store = build_vector_store_for_document(file_path)
-    retriever = get_retriever(vector_store)
-    search_tool = create_search_tool(retriever)
+
+    # ----------------------------------------------
+    # There must be at least one document
+    # ----------------------------------------------
+
+    if not vector_store_exists():
+
+        raise ValueError(
+            "No HR documents have been uploaded yet."
+        )
+
+    # ----------------------------------------------
+    # Connect Qdrant
+    # ----------------------------------------------
+
+    vector_store = (
+        load_vector_store()
+    )
+
+    # ----------------------------------------------
+    # Retriever
+    # ----------------------------------------------
+
+    retriever = get_retriever(
+        vector_store
+    )
+
+    # ----------------------------------------------
+    # Search tool
+    # ----------------------------------------------
+
+    search_tool = create_search_tool(
+        retriever
+    )
+
+    # ----------------------------------------------
+    # LLM
+    # ----------------------------------------------
 
     llm = get_llm()
-    agent = create_hr_agent(llm, [search_tool])
 
-    logger.info("HR assistant is ready to take questions")
+    # ----------------------------------------------
+    # Agent
+    # ----------------------------------------------
+
+    agent = create_hr_agent(
+        llm,
+        [search_tool],
+    )
+
+    logger.info(
+        "HR assistant ready."
+    )
+
     return agent
 
 
-def ask(agent, question: str) -> str:
-    """Ask the agent a question and
-    return its final answer as plain text."""
-    logger.info("User question: %s", question)
-    
-    # # input guard - to get safe inputs 
-    
-    # input_is_safe, _ = check_input(question)
-    # if not input_is_safe:
-    #     return REFUSAL_MESSAGE
-    
-    response = agent.invoke({"messages": [{"role": "user", "content": question}]})
-    answer = response["messages"][-1].content
-    logger.info("Final answer: %s", answer)
-    
-    # # output guard - to check if agent gives safe answer 
-    # output_is_safe, _ = check_output(answer)
-    # if not output_is_safe:
-    #     return REFUSAL_MESSAGE
-    
-    
-    return answer
+# ==================================================
+# Ask
+# ==================================================
 
+def ask(
+    agent,
+    question: str,
+):
+
+    response = agent.invoke(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": question,
+                }
+            ]
+        }
+    )
+
+    return (
+        response["messages"][-1]
+        .content
+    )

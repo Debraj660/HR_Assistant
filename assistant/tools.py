@@ -1,39 +1,82 @@
 from langchain_core.tools import tool
+
+
 from assistant.logger import get_logger
+
 
 logger = get_logger(__name__)
 
 
-@tool
-def search_hr_policy(question: str) -> str:
-    """Search HR policy documents to answer employee questions.
-    
-    Args:
-        question: The employee's question about HR policies
-        
-    Returns:
-        Relevant HR policy information
-    """
-    logger.info("search_hr_policy called with query: %s", question)
-    return f"HR Policy information for: {question}"
+def create_search_tool(
+    retriever
+):
 
-
-def create_search_tool(retriever):
-    """Create a search tool using the retriever."""
-    
     @tool
-    def search_hr_policy_with_context(question: str) -> str:
-        """Search HR policy documents using vector store.
-        
-        Args:
-            question: The employee's question about HR policies
-            
-        Returns:
-            Relevant HR policy information from documents
+    def search_hr_policy_with_context(
+        question: str
+    ) -> str:
         """
-        logger.info("search_hr_policy called with query: %s", question)
-        matching_chunks = retriever.invoke(question)
-        logger.info("Found %d matching chunk(s)", len(matching_chunks))
-        return "\n".join(chunk.page_content for chunk in matching_chunks)
-    
+        Search uploaded HR policy documents
+        using the vector database.
+        """
+
+        logger.info(
+            "Searching HR policy for: %s",
+            question
+        )
+
+        matching_chunks = (
+            retriever.invoke(
+                question
+            )
+        )
+
+        logger.info(
+            "Found %d matching chunks.",
+            len(matching_chunks)
+        )
+
+        if not matching_chunks:
+
+            return (
+                "No relevant HR policy "
+                "information was found."
+            )
+
+        results = []
+
+        for index, chunk in enumerate(
+            matching_chunks,
+            start=1,
+        ):
+
+            filename = chunk.metadata.get(
+                "filename",
+                "Unknown document",
+            )
+
+            document_id = chunk.metadata.get(
+                "document_id",
+                "Unknown",
+            )
+
+            content = (
+                chunk.page_content
+            )
+
+            results.append(
+                f"""
+SOURCE {index}
+Document: {filename}
+Document ID: {document_id}
+
+Content:
+{content}
+"""
+            )
+
+        return "\n".join(
+            results
+        )
+
     return search_hr_policy_with_context

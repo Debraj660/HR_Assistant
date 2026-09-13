@@ -1,56 +1,145 @@
+import tempfile
 from pathlib import Path
-from langchain_community.document_loaders import DirectoryLoader, TextLoader
-from assistant import config
+
+
+from langchain_community.document_loaders import (
+    Docx2txtLoader,
+    PyPDFLoader,
+    TextLoader,
+)
+
+
 from assistant.logger import get_logger
+
 
 logger = get_logger(__name__)
 
 
-def load_documents(file_path: str = config.DATA_FILE_PATH):
-    logger.info("Loading documents from '%s'", file_path)
-    
-    # Use DirectoryLoader to load all .md files
-    loader = DirectoryLoader(
-        path=file_path,
-        glob="**/*.md",  # Recursive search for all .md files
-        loader_cls=TextLoader,
-        loader_kwargs={"encoding": "utf-8"}
-    )
-    
-    documents = loader.load()
-    logger.info("Loaded %d document(s) from directory", len(documents))
-    
-    # Log file sources
-    for doc in documents:
-        logger.debug("Loaded: %s", doc.metadata.get("source"))
-    
-    return documents
+SUPPORTED_EXTENSIONS = {
+    ".pdf",
+    ".docx",
+    ".txt",
+    ".md",
+}
 
 
-# Alternative: If you want more control over file loading
-def load_documents_custom(file_path: str = config.DATA_FILE_PATH):
-    """Load all .md files with custom error handling."""
-    logger.info("Loading markdown documents from '%s'", file_path)
-    
-    documents = []
-    data_dir = Path(file_path)
-    
-    if not data_dir.exists():
-        logger.error("Data directory does not exist: %s", file_path)
+def load_document_from_bytes(
+    file_bytes: bytes,
+    filename: str,
+    document_id: str,
+):
+    """
+    Convert bytes downloaded from Supabase
+    into LangChain Documents.
+    """
+
+    extension = Path(
+        filename
+    ).suffix.lower()
+
+    if extension not in SUPPORTED_EXTENSIONS:
+
+        raise ValueError(
+            f"Unsupported file type: {extension}"
+        )
+
+    temp_path = None
+
+    try:
+
+        # ------------------------------------------
+        # Create temporary file
+        # ------------------------------------------
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=extension,
+        ) as temp_file:
+
+            temp_file.write(
+                file_bytes
+            )
+
+            temp_path = temp_file.name
+
+        logger.info(
+            "Loading document: %s",
+            filename,
+        )
+
+        # ------------------------------------------
+        # Select loader
+        # ------------------------------------------
+
+        if extension == ".pdf":
+
+            loader = PyPDFLoader(
+                temp_path
+            )
+
+        elif extension == ".docx":
+
+            loader = Docx2txtLoader(
+                temp_path
+            )
+
+        else:
+
+            loader = TextLoader(
+                temp_path,
+                encoding="utf-8",
+            )
+
+        documents = loader.load()
+
+        # ------------------------------------------
+        # Add metadata
+        # ------------------------------------------
+
+        for document in documents:
+
+            document.metadata[
+                "document_id"
+            ] = document_id
+
+            document.metadata[
+                "filename"
+            ] = filename
+
+            document.metadata[
+                "document_type"
+            ] = extension
+
+            document.metadata[
+                "source_type"
+            ] = "admin_upload"
+
+        logger.info(
+            "Loaded %d document object(s): %s",
+            len(documents),
+            filename,
+        )
+
         return documents
-    
-    # Find all .md files recursively
-    md_files = list(data_dir.glob("**/*.md"))
-    logger.info("Found %d markdown file(s)", len(md_files))
-    
-    for md_file in md_files:
-        try:
-            loader = TextLoader(str(md_file), encoding="utf-8")
-            docs = loader.load()
-            documents.extend(docs)
-            logger.debug("Loaded: %s (%d docs)", md_file.name, len(docs))
-        except Exception as e:
-            logger.error("Error loading %s: %s", md_file.name, str(e))
-    
-    logger.info("Total documents loaded: %d", len(documents))
-    return documents
+
+    finally:
+
+        # ------------------------------------------
+        # Temporary file cleanup
+        # ------------------------------------------
+
+        if temp_path:
+
+            try:
+
+                Path(
+                    temp_path
+                ).unlink(
+                    missing_ok=True
+                )
+
+            except Exception:
+
+                logger.exception(
+                    "Failed to remove temporary file."
+                )
