@@ -6,9 +6,7 @@ from qdrant_client.models import (
     MatchValue,
 )
 
-
 from langchain_qdrant import QdrantVectorStore
-
 
 from assistant import config
 from assistant.embeddings import get_embeddings_model
@@ -18,19 +16,18 @@ from assistant.logger import get_logger
 logger = get_logger(__name__)
 
 
+# ==================================================
 # Qdrant client
-
+# ==================================================
 
 def get_qdrant_client():
 
     if not config.QDRANT_URL:
-
         raise ValueError(
             "Missing QDRANT_URL."
         )
 
     if not config.QDRANT_API_KEY:
-
         raise ValueError(
             "Missing QDRANT_API_KEY."
         )
@@ -53,6 +50,51 @@ def vector_store_exists():
 
         return client.collection_exists(
             config.QDRANT_COLLECTION_NAME
+        )
+
+    finally:
+
+        client.close()
+
+
+# ==================================================
+# Ensure document_id payload index
+# ==================================================
+
+def ensure_document_id_index():
+    """
+    Ensure that metadata.document_id has a Qdrant
+    payload index.
+
+    This index is required when filtering/deleting
+    points using metadata.document_id.
+    """
+
+    if not vector_store_exists():
+
+        logger.info(
+            "Qdrant collection does not exist. "
+            "Skipping payload index creation."
+        )
+
+        return
+
+    client = get_qdrant_client()
+
+    try:
+
+        client.create_payload_index(
+            collection_name=(
+                config.QDRANT_COLLECTION_NAME
+            ),
+            field_name="metadata.document_id",
+            field_schema="keyword",
+            wait=True,
+        )
+
+        logger.info(
+            "Qdrant payload index ready for "
+            "metadata.document_id."
         )
 
     finally:
@@ -97,10 +139,15 @@ def build_vector_store(
         )
     )
 
+    # Create index after the collection has been created
+    ensure_document_id_index()
+
     return vector_store
 
 
+# ==================================================
 # Load existing vector store
+# ==================================================
 
 def load_vector_store():
 
@@ -129,7 +176,9 @@ def load_vector_store():
     return vector_store
 
 
+# ==================================================
 # Add documents
+# ==================================================
 
 def add_documents_to_vector_store(
     chunks
@@ -141,11 +190,22 @@ def add_documents_to_vector_store(
             "No chunks provided."
         )
 
+    # ------------------------------------------------
+    # First document
+    # ------------------------------------------------
+
     if not vector_store_exists():
 
         return build_vector_store(
             chunks
         )
+
+    # ------------------------------------------------
+    # Existing collection
+    # ------------------------------------------------
+
+    # Make sure the filterable field is indexed
+    ensure_document_id_index()
 
     vector_store = (
         load_vector_store()
@@ -163,7 +223,9 @@ def add_documents_to_vector_store(
     return vector_store
 
 
+# ==================================================
 # Delete document from Qdrant
+# ==================================================
 
 def delete_document_from_vector_store(
     document_id: str
@@ -173,6 +235,12 @@ def delete_document_from_vector_store(
     to the specified document.
     """
 
+    if not document_id:
+
+        raise ValueError(
+            "document_id cannot be empty."
+        )
+
     if not vector_store_exists():
 
         logger.info(
@@ -180,6 +248,14 @@ def delete_document_from_vector_store(
         )
 
         return
+
+    # ------------------------------------------------
+    # IMPORTANT:
+    # Qdrant requires an index for filtering
+    # metadata.document_id.
+    # ------------------------------------------------
+
+    ensure_document_id_index()
 
     client = get_qdrant_client()
 
@@ -223,7 +299,9 @@ def delete_document_from_vector_store(
         client.close()
 
 
+# ==================================================
 # Retriever
+# ==================================================
 
 def get_retriever(
     vector_store,
@@ -236,11 +314,18 @@ def get_retriever(
         }
     )
 
+
+# ==================================================
 # Delete entire collection
+# ==================================================
 
 def delete_vector_store():
 
     if not vector_store_exists():
+
+        logger.info(
+            "Qdrant collection does not exist."
+        )
 
         return
 
@@ -248,8 +333,17 @@ def delete_vector_store():
 
     try:
 
+        logger.info(
+            "Deleting Qdrant collection '%s'.",
+            config.QDRANT_COLLECTION_NAME,
+        )
+
         client.delete_collection(
             config.QDRANT_COLLECTION_NAME
+        )
+
+        logger.info(
+            "Qdrant collection deleted."
         )
 
     finally:

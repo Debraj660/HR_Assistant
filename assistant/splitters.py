@@ -1,16 +1,35 @@
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import (
+    RecursiveCharacterTextSplitter,
+)
 
-from assistant import config 
+
+from assistant import config
 from assistant.logger import get_logger
+
 
 logger = get_logger(__name__)
 
 
-def split_into_chunks(documents):   
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=config.CHUNK_SIZE,
-        chunk_overlap=config.CHUNK_OVERLAP,
+def split_into_chunks(
+    documents
+):
+
+    text_splitter = (
+        RecursiveCharacterTextSplitter(
+            chunk_size=config.CHUNK_SIZE,
+            chunk_overlap=config.CHUNK_OVERLAP,
+        )
     )
-    chunks = text_splitter.split_documents(documents)
-    logger.info("Split document(s) into %d chunk(s)", len(chunks))
+
+    chunks = (
+        text_splitter.split_documents(
+            documents
+        )
+    )
+
+    logger.info(
+        "Created %d chunks.",
+        len(chunks),
+    )
+
     return chunks
