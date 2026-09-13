@@ -16,9 +16,7 @@ from assistant.logger import get_logger
 logger = get_logger(__name__)
 
 
-# ==================================================
 # Qdrant client
-# ==================================================
 
 def get_qdrant_client():
 
@@ -38,9 +36,7 @@ def get_qdrant_client():
     )
 
 
-# ==================================================
 # Check collection
-# ==================================================
 
 def vector_store_exists():
 
@@ -57,9 +53,7 @@ def vector_store_exists():
         client.close()
 
 
-# ==================================================
 # Ensure document_id payload index
-# ==================================================
 
 def ensure_document_id_index():
     """
@@ -82,7 +76,6 @@ def ensure_document_id_index():
     client = get_qdrant_client()
 
     try:
-
         client.create_payload_index(
             collection_name=(
                 config.QDRANT_COLLECTION_NAME
@@ -102,9 +95,8 @@ def ensure_document_id_index():
         client.close()
 
 
-# ==================================================
+
 # Create vector store
-# ==================================================
 
 def build_vector_store(
     chunks
@@ -145,9 +137,7 @@ def build_vector_store(
     return vector_store
 
 
-# ==================================================
 # Load existing vector store
-# ==================================================
 
 def load_vector_store():
 
@@ -176,9 +166,7 @@ def load_vector_store():
     return vector_store
 
 
-# ==================================================
 # Add documents
-# ==================================================
 
 def add_documents_to_vector_store(
     chunks
@@ -190,9 +178,7 @@ def add_documents_to_vector_store(
             "No chunks provided."
         )
 
-    # ------------------------------------------------
     # First document
-    # ------------------------------------------------
 
     if not vector_store_exists():
 
@@ -200,9 +186,7 @@ def add_documents_to_vector_store(
             chunks
         )
 
-    # ------------------------------------------------
     # Existing collection
-    # ------------------------------------------------
 
     # Make sure the filterable field is indexed
     ensure_document_id_index()
@@ -249,11 +233,9 @@ def delete_document_from_vector_store(
 
         return
 
-    # ------------------------------------------------
-    # IMPORTANT:
     # Qdrant requires an index for filtering
     # metadata.document_id.
-    # ------------------------------------------------
+
 
     ensure_document_id_index()
 

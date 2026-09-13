@@ -1,8 +1,5 @@
 import streamlit as st
-
-
 from assistant.logger import get_logger
-
 
 from assistant.pipeline import (
     add_uploaded_document,
@@ -12,9 +9,7 @@ from assistant.pipeline import (
     remove_document,
 )
 
-
 logger = get_logger(__name__)
-
 
 # PAGE CONFIG
 
