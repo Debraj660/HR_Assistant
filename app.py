@@ -16,9 +16,7 @@ from assistant.pipeline import (
 logger = get_logger(__name__)
 
 
-# ==================================================
 # PAGE CONFIG
-# ==================================================
 
 st.set_page_config(
     page_title="HR Policy Assistant",
@@ -27,9 +25,9 @@ st.set_page_config(
 )
 
 
-# ==================================================
+
 # CONSTANTS
-# ==================================================
+
 
 SUPPORTED_FILE_TYPES = [
     "pdf",
@@ -42,9 +40,8 @@ SUPPORTED_FILE_TYPES = [
 MAX_FILE_SIZE_MB = 20
 
 
-# ==================================================
+
 # HEADER
-# ==================================================
 
 st.title(
     "HR Policy Assistant"
@@ -55,9 +52,8 @@ st.caption(
 )
 
 
-# ==================================================
+
 # CACHED AGENT
-# ==================================================
 
 @st.cache_resource(
     show_spinner="Connecting to HR knowledge base..."
@@ -67,9 +63,8 @@ def get_agent():
     return build_hr_assistant()
 
 
-# ==================================================
+
 # ADMIN SIDEBAR
-# ==================================================
 
 with st.sidebar:
 
@@ -77,9 +72,7 @@ with st.sidebar:
 
     st.divider()
 
-    # ==================================================
     # UPLOAD
-    # ==================================================
 
     st.subheader(
         "Upload Document"
@@ -304,9 +297,7 @@ except Exception as e:
     st.stop()
 
 
-# ==================================================
 # CHAT HISTORY
-# ==================================================
 
 if "messages" not in st.session_state:
 
@@ -324,9 +315,8 @@ for message in st.session_state.messages:
         )
 
 
-# ==================================================
+
 # CHAT INPUT
-# ==================================================
 
 question = st.chat_input(
     "Ask a question about HR policy..."

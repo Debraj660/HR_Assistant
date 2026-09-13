@@ -28,9 +28,8 @@ def get_supabase() -> Client:
     )
 
 
-# ==================================================
+
 # Upload
-# ==================================================
 
 def upload_document(filename: str, file_bytes: bytes) -> dict:
     """
@@ -124,9 +123,7 @@ def upload_document(filename: str, file_bytes: bytes) -> dict:
     return metadata
 
 
-# ==================================================
 # List documents
-# ==================================================
 
 def list_documents() -> list[dict]:
     """Retrieve all document metadata records ordered by newest first."""
@@ -135,9 +132,7 @@ def list_documents() -> list[dict]:
     return response.data or []
 
 
-# ==================================================
 # Get one document
-# ==================================================
 
 def get_document(document_id: str) -> Optional[dict]:
     """Retrieve a single document's metadata by ID."""
