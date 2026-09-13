@@ -1,0 +1,40 @@
+
+#technology for ai agents(python libraries)
+langchain 
+langchain-core 
+langchain-community
+
+
+
+## LLM PROVIDER 
+
+langchain-groq
+langchain-text-splitters 
+
+# vector store
+faiss-cpu
+langchain-qdrant
+qdrant-client
+
+
+# notebook
+jupyter
+ipykernel
+
+
+# web app 
+
+streamlit
+
+# LLM gateways
+
+portkey-ai
+langchain-openai
+
+
+# evaluations 
+
+openevals
+
+#dot-env
+python-dotenv
