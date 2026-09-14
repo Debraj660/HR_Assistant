@@ -332,7 +332,7 @@ if question:
     with st.chat_message("assistant"):
 
         with st.spinner(
-            "Thinking..."
+            "Typing..."
         ):
 
             try:
