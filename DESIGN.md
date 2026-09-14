@@ -1,130 +1,251 @@
 # HR Assistant Design
 
-This document describes the design of the HR Assistant project. The system is a retrieval-augmented HR policy assistant: administrators upload policy documents, the application indexes those documents into Qdrant, and employees ask questions that are answered only from retrieved policy context.
+This document explains the current design of the HR Assistant project. The application is a retrieval-augmented policy assistant: HR documents are uploaded, stored, chunked, embedded, indexed, retrieved, and used as the only source for answers.
 
-The active production path uses Streamlit, Supabase, Qdrant, Jina embeddings, Groq, and LangChain. Supabase stores uploaded files and document metadata. Qdrant stores searchable document chunks and their citation metadata.
+The current implementation uses Streamlit, Supabase, Qdrant, Jina embeddings, Groq, and LangChain. Supabase stores original files and metadata. Qdrant stores searchable chunk vectors and metadata. The model is instructed to answer only when retrieved policy context directly supports the user's question.
 
 ## 1. Architecture
 
-The project is organized around a small Streamlit application and an `assistant/` package. Streamlit owns the user interface. The assistant package owns storage, document loading, chunking, retrieval, model setup, and agent orchestration.
+The app has one UI process and a small set of backend modules inside the `assistant/` package.
 
-Main components:
+Core components:
 
-- `app.py`: Streamlit UI for admin uploads, document deletion, document listing, and user chat.
-- `assistant/pipeline.py`: main orchestration layer for upload, index, delete, assistant build, and question answering.
-- `assistant/supabase_storage.py`: Supabase Storage and `documents` metadata table operations.
-- `assistant/doc_loader.py`: converts PDF, DOCX, TXT, and Markdown bytes into LangChain documents.
-- `assistant/splitters.py`: splits loaded documents into overlapping chunks.
-- `assistant/embeddings.py`: creates the Jina embedding model.
-- `assistant/vector_store.py`: creates, loads, updates, queries, and deletes Qdrant vectors.
-- `assistant/tools.py`: wraps the retriever as a LangChain tool that returns policy context with citation details.
-- `assistant/llm.py`: creates the Groq chat model.
-- `assistant/agent.py`: builds the LangChain agent with the HR policy system prompt and search tool.
+- `app.py`: Streamlit interface for uploading, deleting, listing, chatting, and rendering answers.
+- `assistant/pipeline.py`: orchestration layer for upload/index, delete, assistant construction, question validation, and answer generation.
+- `assistant/supabase_storage.py`: Supabase Storage and Supabase `documents` table access.
+- `assistant/doc_loader.py`: file-type-specific document loading.
+- `assistant/splitters.py`: chunking with `RecursiveCharacterTextSplitter`.
+- `assistant/embeddings.py`: Jina embedding model creation.
+- `assistant/vector_store.py`: Qdrant collection, indexing, retrieval, and deletion.
+- `assistant/tools.py`: LangChain search tool over Qdrant retrieval results.
+- `assistant/llm.py`: Groq chat model setup.
+- `assistant/agent.py`: LangChain agent setup with the HR grounding prompt.
 
 ### Flow Chart
 
 ```mermaid
 flowchart TD
-    A[Admin uploads HR document in Streamlit] --> B[Validate file type and 20 MB size limit]
+    A[Admin selects document in Streamlit] --> B[Validate file type and 20 MB size]
     B --> C[Upload raw file to Supabase Storage]
-    C --> D[Insert document metadata into Supabase documents table]
-    D --> E[Load bytes into LangChain Documents]
-    E --> F[Attach metadata: document_id, filename, type, section, page]
-    F --> G[Split document into overlapping chunks]
-    G --> H[Embed chunks with Jina embeddings]
+    C --> D[Insert metadata row in Supabase documents table]
+    D --> E[Load uploaded bytes into LangChain Documents]
+    E --> F[Attach citation and deletion metadata]
+    F --> G[Split documents into overlapping chunks]
+    G --> H[Create embeddings with Jina]
     H --> I[Store vectors and metadata in Qdrant]
-    I --> J[Clear cached assistant and refresh UI]
+    I --> J[Clear cached assistant]
 
-    U[User asks HR question in Streamlit chat] --> V[Build or reuse cached HR assistant]
-    V --> W[Agent receives question]
-    W --> X[Agent calls HR policy search tool]
-    X --> Y[Retriever fetches top matching Qdrant chunks]
-    Y --> Z[Tool returns context with citations]
-    Z --> AA[LLM answers only from retrieved context]
-    AA --> AB[Streamlit renders Markdown answer]
+    U[User enters HR question] --> V[Trim and validate question]
+    V --> W{Question clear?}
+    W -- No --> X[Return fallback response]
+    W -- Yes --> Y[Invoke HR LangChain agent]
+    Y --> Z[Agent calls policy search tool]
+    Z --> AA[Retriever fetches top Qdrant chunks]
+    AA --> AB[Tool returns context with citations]
+    AB --> AC[LLM writes grounded Markdown answer]
+    AC --> AD{Answer supported and non-empty?}
+    AD -- No --> X
+    AD -- Yes --> AE[Streamlit renders answer]
 ```
 
-### Upload To Index Flow
+### Upload To Index Data Flow
 
-The upload path begins in `app.py` when an admin selects a supported document. The UI validates size before calling `add_uploaded_document()` in `assistant/pipeline.py`.
+The upload flow starts in `app.py`. The admin selects a document in the sidebar, and Streamlit checks that the file is no larger than 20 MB. Supported extensions are `.pdf`, `.docx`, `.txt`, and `.md`.
+# HR Assistant Design
 
-The pipeline first uploads the original bytes to Supabase Storage and inserts a metadata record into the Supabase `documents` table. The file is then loaded into LangChain document objects, split into chunks, embedded with Jina, and written to Qdrant.
+This document explains the current design of the HR Assistant project. The application is a retrieval-augmented policy assistant: HR documents are uploaded, stored, chunked, embedded, indexed, retrieved, and used as the only source for answers.
 
-If indexing fails after the file is uploaded, the pipeline attempts to roll back the Supabase document record and storage object. This keeps the storage layer closer to the vector layer and avoids listing files that cannot be searched.
+The current implementation uses Streamlit, Supabase, Qdrant, Jina embeddings, Groq, and LangChain. Supabase stores original files and metadata. Qdrant stores searchable chunk vectors and metadata. The model is instructed to answer only when retrieved policy context directly supports the user's question.
 
-### Query To Answer Flow
+## 1. Architecture
 
-The query path begins when the user submits a chat question. `app.py` builds the assistant through `build_hr_assistant()` and caches it with `st.cache_resource`, so Qdrant, retriever, tool, LLM, and agent setup are not repeated for every message.
+The app has one UI process and a small set of backend modules inside the `assistant/` package.
 
-When the user asks a question, `ask()` invokes the LangChain agent with a message payload. The agent has one tool: `search_hr_policy_with_context`. That tool searches Qdrant through the retriever, formats the matching chunks with citation metadata, and returns them to the model. The system prompt requires the final answer to use only this retrieved context.
+Core components:
+
+- `app.py`: Streamlit interface for uploading, deleting, listing, chatting, and rendering answers.
+- `assistant/pipeline.py`: orchestration layer for upload/index, delete, assistant construction, question validation, and answer generation.
+- `assistant/supabase_storage.py`: Supabase Storage and Supabase `documents` table access.
+- `assistant/doc_loader.py`: file-type-specific document loading.
+- `assistant/splitters.py`: chunking with `RecursiveCharacterTextSplitter`.
+- `assistant/embeddings.py`: Jina embedding model creation.
+- `assistant/vector_store.py`: Qdrant collection, indexing, retrieval, and deletion.
+- `assistant/tools.py`: LangChain search tool over Qdrant retrieval results.
+- `assistant/llm.py`: Groq chat model setup.
+- `assistant/agent.py`: LangChain agent setup with the HR grounding prompt.
+
+### Flow Chart
+
+```mermaid
+flowchart TD
+    A[Admin selects document in Streamlit] --> B[Validate file type and 20 MB size]
+    B --> C[Upload raw file to Supabase Storage]
+    C --> D[Insert metadata row in Supabase documents table]
+    D --> E[Load uploaded bytes into LangChain Documents]
+    E --> F[Attach citation and deletion metadata]
+    F --> G[Split documents into overlapping chunks]
+    G --> H[Create embeddings with Jina]
+    H --> I[Store vectors and metadata in Qdrant]
+    I --> J[Clear cached assistant]
+
+    U[User enters HR question] --> V[Trim and validate question]
+    V --> W{Question clear?}
+    W -- No --> X[Return fallback response]
+    W -- Yes --> Y[Invoke HR LangChain agent]
+    Y --> Z[Agent calls policy search tool]
+    Z --> AA[Retriever fetches top Qdrant chunks]
+    AA --> AB[Tool returns context with citations]
+    AB --> AC[LLM writes grounded Markdown answer]
+    AC --> AD{Answer supported and non-empty?}
+    AD -- No --> X
+    AD -- Yes --> AE[Streamlit renders answer]
+```
+
+### Upload To Index Data Flow
+
+The upload flow starts in `app.py`. The admin selects a document in the sidebar, and Streamlit checks that the file is no larger than 20 MB. Supported extensions are `.pdf`, `.docx`, `.txt`, and `.md`.
+
+The UI then calls:
+
+```python
+add_uploaded_document(filename, file_bytes)
+```
+
+The pipeline uploads the raw file to Supabase Storage first. It also inserts a metadata row in the Supabase `documents` table. That metadata row creates the `document_id` used later in Qdrant metadata.
+
+After storage succeeds, the same uploaded bytes are loaded into LangChain document objects. The loader adds document metadata, the splitter creates chunks, Jina creates embeddings, and Qdrant stores the chunk vectors with metadata.
+
+If indexing fails after the Supabase upload, the pipeline attempts to roll back the Supabase file and metadata through `delete_document(document_id)`. This prevents a document from appearing in the admin list when it cannot be searched.
+
+### Query To Answer Data Flow
+
+The query flow starts when a user sends a chat message. `ask()` first checks for an empty string and returns fallback when the question has no content.
+
+For non-empty questions, the pipeline creates a validation LLM and calls `is_question_clear()`. The validation prompt is intentionally strict. It returns `True` only when the LLM response is exactly `YES`; every other response is treated as unclear.
+
+Clear questions are sent to the HR policy agent. The agent can call one tool, `search_hr_policy_with_context`, which retrieves the top matching policy chunks from Qdrant and returns each chunk with citation fields. The final model response is extracted from the LangChain agent messages.
+
+If the agent fails, returns an unexpected response shape, or returns an empty answer, `ask()` returns the fallback response.
 
 ## 2. Chunking And Retrieval
 
-Documents are split with `RecursiveCharacterTextSplitter`. The current configuration is:
+Documents are chunked with `RecursiveCharacterTextSplitter`.
 
-- chunk size: `1000`
-- chunk overlap: `150`
-- retriever top-k: `5`
-
-These values are defined in `assistant/config.py`.
-
-The chunk size is large enough to preserve policy paragraphs, table-adjacent explanations, and eligibility conditions that often need nearby context. The overlap helps avoid losing meaning when a relevant policy spans a chunk boundary. For HR policy text, this is usually more useful than very tiny chunks, because a single answer often depends on a condition, limit, and exception appearing close together.
-
-Each loaded document receives metadata before chunking:
-
-- `document_id`: generated UUID from the Supabase metadata record.
-- `filename`: original uploaded file name.
-- `document_type`: file extension such as `.pdf`, `.docx`, `.txt`, or `.md`.
-- `source_type`: currently `admin_upload`.
-- `section`: human-readable section name.
-- `page_number`: added for PDF pages when available.
-
-For PDFs, the section is based on the page number. For Markdown, the loader extracts the latest Markdown heading from the loaded text and stores it as the section. TXT and DOCX currently use `General`.
-
-The retriever is created from the Qdrant vector store with `search_kwargs={"k": 5}`. This means the search tool returns the five most semantically relevant chunks for the user question. The goal is to give the model enough evidence to answer common policy questions without flooding it with loosely related context.
-
-Qdrant also stores the metadata with each vector. That metadata is needed for two things:
-
-- user-facing citations, such as document name and section
-- document deletion, using the `metadata.document_id` payload filter
-
-The vector store creates a payload index on `metadata.document_id`. That index makes it possible to delete all vectors belonging to one uploaded document when the admin removes it from the app.
-
-## 3. Grounding
-
-The assistant is intentionally conservative. The system prompt in `assistant/config.py` tells the model to answer using only the retrieved policy context and not to use general knowledge, assumptions, or outside information.
-
-Grounding is enforced in three layers:
-
-1. Retrieval gives the model only policy chunks from uploaded HR documents.
-2. The search tool returns citation details with every chunk.
-3. The system prompt tells the model to cite every factual claim and return an empty answer if the retrieved context is not sufficient.
-
-This is important for HR policy because a plausible answer can still be wrong or risky. For example, a related leave policy should not be used to invent a new eligibility rule, and the absence of a restriction should not be treated as permission.
-
-When retrieval is weak, the desired model behavior is to return an empty answer. The `ask()` function then converts an empty response into this fallback:
+Current settings:
 
 ```text
-I couldn't find enough information in the available HR policies to answer that. Please contact HR.
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 150
+TOP_K_RESULTS = 5
 ```
 
-If the agent throws an exception during a Streamlit chat request, the UI displays a general error message instead. This separates unsupported policy questions from operational failures.
+The chunk size is chosen to keep nearby policy conditions together. HR policies often place a rule, limit, exception, and eligibility condition in adjacent text or table rows. Very small chunks can separate those pieces and make answers less reliable.
 
-The answer format is Markdown. Citations are expected to use the human-readable format:
+The overlap reduces boundary loss. If a paragraph or table explanation crosses a chunk boundary, overlap gives the retriever another chance to fetch enough context.
+
+The retriever uses Qdrant through LangChain:
+
+```python
+vector_store.as_retriever(search_kwargs={"k": 5})
+```
+
+Returning five chunks is a practical balance. It gives the model enough context for direct fact questions and structured policy lookups without sending too much loosely related text.
+
+### Stored Metadata
+
+Each loaded document stores metadata before chunking:
+
+```text
+document_id
+filename
+document_type
+source_type
+section
+page_number
+```
+
+`document_id` is the UUID generated for the Supabase metadata row. It connects Supabase and Qdrant. When a document is deleted, Qdrant points are removed by filtering on `metadata.document_id`.
+
+`filename` and `section` are used for citations. The system prompt requires citations in this format:
 
 ```text
 [Source: Document Name — Section Name]
 ```
 
-Source IDs are kept inside tool context for traceability, but they are not intended to be the user-facing citation format.
+`page_number` is added for PDFs when loader metadata includes a page. For Markdown files, `section` is inferred from headings. TXT and DOCX files currently use `General`.
+
+### Why Qdrant Metadata Matters
+
+Qdrant does more than store embeddings. It also stores metadata payloads with each chunk. This project uses that metadata for:
+
+- citation formatting
+- document-level deletion
+- traceability from answer back to uploaded document
+
+The vector store creates a payload index on:
+
+```text
+metadata.document_id
+```
+
+That index is required for efficient filtered deletion.
+
+## 3. Grounding
+
+The assistant is designed to avoid policy invention. It should answer only when uploaded policy context directly supports the user's question.
+
+Grounding happens in several steps:
+
+1. Question validation rejects unclear, ambiguous, malformed, or incomplete questions before retrieval.
+2. The HR agent receives a system prompt that forbids outside knowledge and unsupported assumptions.
+3. The agent must use retrieved policy context from the Qdrant search tool.
+4. The prompt requires citations for factual claims.
+5. Empty or unsupported answers are converted to fallback.
+
+The system prompt also handles common policy risks. It tells the model not to treat absence of a prohibition as permission. It also says that related concepts are not enough. A policy about fitness equipment, for example, should not automatically answer a question about a personal home gym expense unless the retrieved policy explicitly supports that exact conclusion.
+
+### Expected Behaviors
+
+For a direct fact question, the assistant should return the exact value and cite the specific source.
+
+Example:
+
+```text
+Question: What is the casual leave carry-forward limit?
+Expected: The correct number, with a citation.
+```
+
+For a structured policy or table lookup, the assistant should identify the relevant row and column, answer the specific cell, and cite the table source.
+
+Example:
+
+```text
+Question: Does the Standard health tier cover dental implants?
+Expected: The value from the Standard row and Dental implants column, with a citation.
+```
+
+For an unknown, unclear, or weakly supported question, the assistant should not guess. It should return fallback and point the user to HR.
+
+Example:
+
+```text
+Question: Can I expense a personal home gym?
+Expected: Fallback unless the retrieved policy directly answers that exact question.
+```
+
+The fallback response is:
+
+```text
+I couldn't find enough information in the available HR policies to answer that. Please contact HR.
+```
 
 ## 4. Schema And APIs
 
-This project does not expose a public HTTP API. The "APIs" are internal Python function boundaries and external service schemas.
+The project does not expose a public HTTP API. The schemas below are internal Python boundaries and service record shapes.
 
 ### Upload Request
 
-`app.py` sends uploaded file data into the pipeline:
+The Streamlit upload flow calls:
 
 ```python
 add_uploaded_document(
@@ -133,28 +254,28 @@ add_uploaded_document(
 )
 ```
 
-The shape is intentionally small. The UI owns Streamlit's uploaded file object, while the pipeline only needs a filename and raw bytes. This keeps the pipeline testable outside Streamlit.
+This schema keeps Streamlit-specific objects out of the pipeline. The pipeline only needs stable primitives: a file name and bytes.
 
 ### Upload Response
 
-`add_uploaded_document()` returns the Supabase metadata record:
+The upload pipeline returns the Supabase metadata dictionary:
 
 ```python
 {
     "id": "document UUID",
-    "filename": "Benefits Policy.pdf",
-    "storage_path": "documents/<document_id>/Benefits Policy.pdf",
+    "filename": "policy.pdf",
+    "storage_path": "documents/<document_id>/policy.pdf",
     "file_type": ".pdf",
     "file_size": 123456,
-    "uploaded_at": "ISO timestamp"
+    "uploaded_at": "ISO timestamp",
 }
 ```
 
-This schema supports listing, deleting, and connecting Supabase records to Qdrant vectors.
+This shape supports admin listing, deletion, and the connection between storage records and Qdrant vectors.
 
-### Document Metadata Table
+### Supabase Documents Table
 
-The Supabase `documents` table is expected to store:
+The app expects a `documents` table with:
 
 ```text
 id
@@ -165,11 +286,53 @@ file_size
 uploaded_at
 ```
 
-The `id` is the shared key between Supabase metadata and Qdrant chunk metadata. That makes deletion straightforward: fetch the Supabase document, delete matching Qdrant vectors by `metadata.document_id`, then remove the Supabase file and metadata row.
+The `id` is the shared document identifier. It appears in Supabase metadata and in Qdrant chunk metadata.
 
-### Agent Question Request
+### Qdrant Payload
 
-The question-answering path sends a LangChain message payload:
+Each Qdrant chunk stores the text vector plus metadata similar to:
+
+```python
+{
+    "metadata": {
+        "document_id": "<document_id>",
+        "filename": "policy.pdf",
+        "document_type": ".pdf",
+        "source_type": "admin_upload",
+        "section": "Page 1",
+        "page_number": 1,
+    },
+    "page_content": "policy chunk text"
+}
+```
+
+The exact Qdrant storage shape is handled by LangChain's `QdrantVectorStore`, but these are the meaningful application fields.
+
+### Question Validation Request
+
+Before retrieval, `ask()` calls:
+
+```python
+is_question_clear(validation_llm, question)
+```
+
+The validation LLM receives a prompt that asks for only one word:
+
+```text
+YES
+```
+
+or:
+
+```text
+NO
+```
+
+Only an exact `YES` allows the question to reach the HR agent. This schema is intentionally strict because ambiguous questions should not be repaired or guessed.
+
+### Agent Request
+
+Clear questions are sent to the LangChain agent as messages:
 
 ```python
 {
@@ -182,7 +345,7 @@ The question-answering path sends a LangChain message payload:
 }
 ```
 
-This matches the LangChain agent interface and keeps the app ready for future chat history support.
+The message shape matches LangChain's agent interface and leaves room for future conversation history.
 
 ### Search Tool Response
 
@@ -199,52 +362,375 @@ Content:
 <retrieved policy text>
 ```
 
-Plain text is used because the LangChain tool passes context directly to the model. The structure is still regular enough for the prompt to tell the model which fields should be used for citations.
+Plain text is easy for the model to consume, while the labels make citation fields clear.
 
-### Final Answer Response
+### Final Answer
 
-`ask()` returns a Markdown string:
+The final app-level response is a Markdown string:
 
 ```python
-"Employees in Band B are enrolled in the Standard health tier. [Source: Benefits Policy — Health coverage tiers]"
+"The Standard health tier does not cover dental implants. [Source: Benefits Policy — Health coverage tiers]"
 ```
 
-Markdown is a good fit because Streamlit can render it directly, and HR answers often benefit from bullets, tables, short headings, and inline citations.
+Markdown is used because Streamlit renders it directly, and policy answers often need bullets, tables, short headings, and inline citations.
 
 ## 5. Trade-Offs
 
-### Qdrant And Supabase Instead Of Local Files
+### Qdrant And Supabase Instead Of Local Storage
 
-A local-only store is simpler during prototyping, but it does not fit a document management workflow very well. Uploaded files need durable storage, metadata listing, deletion, and a vector database that can be queried and filtered consistently.
+A local vector index and local file storage are easy for early experiments, but they do not fit the current app requirements. The admin needs durable uploaded files, a document list, deletion, and a retrievable vector store with metadata filtering.
 
-Supabase was chosen for file storage and document metadata. Qdrant was chosen for vector search and metadata-filtered deletion. This split keeps original files and vector chunks in systems designed for those jobs.
+Supabase was chosen for file storage and metadata. Qdrant was chosen for vector search and document-level vector deletion. This separates original document storage from semantic retrieval.
 
-### Synchronous Indexing Instead Of A Background Queue
+### Synchronous Upload Indexing Instead Of Background Jobs
 
-The current app indexes documents during the upload request. This is easy to understand and gives the admin immediate feedback. It also keeps the project small.
+The current implementation indexes during the Streamlit upload request. This is simple and gives immediate success or failure feedback.
 
-The rejected alternative is a background job queue. A queue would be better for large files, many concurrent uploads, retries, progress tracking, and production scale. For the current project size, synchronous indexing is acceptable, but it can make uploads feel slow and can fail inside the UI request path.
+The rejected alternative is asynchronous indexing through a queue. A queue would improve responsiveness, retry behavior, and large-file handling, but it would also add worker infrastructure and status tracking. For this project stage, synchronous indexing keeps the system easier to reason about.
 
-### 1000 Character Chunks With 150 Character Overlap
+### Strict Question Validation Instead Of Lenient Interpretation
 
-Smaller chunks can improve precision, but they often lose the policy conditions around an answer. Larger chunks preserve context, but they may retrieve more irrelevant text and leave less room for multiple sources.
+The pipeline now validates questions before retrieval. This rejects vague prompts such as "Is this covered?" or "What about gym?" instead of guessing the user's intent from keywords.
 
-The current `1000` and `150` settings are a middle ground. They keep related HR policy text together while still allowing the retriever to return several focused chunks.
+The trade-off is that some short but understandable user questions may be rejected. The benefit is safer HR behavior: unclear questions do not reach retrieval and cannot produce confident but unsupported policy answers.
 
-### Strict Grounding Instead Of Helpful Guessing
+### 1000 Character Chunks Instead Of Very Small Chunks
 
-The assistant is designed to say nothing or fall back when policy context is insufficient. A more conversational assistant could use general HR knowledge, but that would be risky for internal policy questions.
+Very small chunks can improve narrow matching, but they can split policy rules from their exceptions or limits. Very large chunks preserve context but may dilute retrieval precision.
 
-The strict approach can feel less helpful when retrieval misses the right chunk. The benefit is that answers are less likely to invent permissions, benefits, exceptions, or restrictions.
+The current `1000` character chunk size with `150` overlap is a middle ground. It keeps related HR policy text together while allowing Qdrant to return several relevant chunks.
+
+### Empty Model Answer Plus App Fallback
+
+The system prompt asks the model to return an empty answer when context is insufficient. The application then converts empty answers into a user-facing fallback message.
+
+This keeps the model prompt focused on evidence and keeps the user experience friendly. The rejected alternative is asking the model to explain every refusal, which can accidentally include unsupported policy reasoning.
 
 ## 6. If There Were Two More Weeks
 
-The first hardening priority would be evaluation. A small test set of realistic HR questions should verify answer correctness, citation quality, refusal behavior, and retrieval coverage. This would catch cases where the model answers from weak evidence or fails to cite the exact policy section.
+The first hardening priority would be evaluation. The app needs a small test set covering direct facts, table lookups, ambiguous questions, off-policy questions, weak retrieval, and citation correctness.
 
-The second priority would be authentication and authorization. Admin upload/delete actions should be restricted, and employee access should be tied to the organization's identity provider. Supabase row-level security and separate service roles should be reviewed before wider deployment.
+The second priority would be authentication and authorization. Upload and delete actions should be admin-only, and user access should be tied to company identity. Supabase permissions and service role usage should be tightened before production deployment.
 
-The third priority would be ingestion quality. PDF tables, scanned documents, complex DOCX formatting, and section extraction need stronger handling. Better table extraction would matter for benefits limits, eligibility matrices, and policy schedules.
+The third priority would be ingestion quality. PDF tables, scanned PDFs, DOCX section headings, and complex policy tables need more reliable extraction. This matters for HR policies where a single answer can depend on a table cell.
 
-The fourth priority would be operational resilience. Upload indexing should move to a background job with status tracking, retries, and partial-failure recovery. Health checks should be added for Supabase, Qdrant, Jina, and Groq.
+The fourth priority would be asynchronous indexing. Large documents should be processed in the background with progress status, retries, and clear failure states.
 
-The fifth priority would be feedback and auditability. Users should be able to mark answers as helpful or incorrect, and admins should be able to inspect which chunks were used for an answer. This would make it easier to improve retrieval, prompts, and document coverage over time.
+The fifth priority would be observability and feedback. The app should log retrieved chunk IDs, validation decisions, fallback reasons, and user feedback so retrieval quality and prompt behavior can be improved safely.
+
+The sixth priority would be admin tooling. Admins should be able to inspect indexed documents, re-index a document, see chunk counts, and verify that citations point to the expected sections.
+
+The UI then calls:
+
+```python
+add_uploaded_document(filename, file_bytes)
+```
+
+The pipeline uploads the raw file to Supabase Storage first. It also inserts a metadata row in the Supabase `documents` table. That metadata row creates the `document_id` used later in Qdrant metadata.
+
+After storage succeeds, the same uploaded bytes are loaded into LangChain document objects. The loader adds document metadata, the splitter creates chunks, Jina creates embeddings, and Qdrant stores the chunk vectors with metadata.
+
+If indexing fails after the Supabase upload, the pipeline attempts to roll back the Supabase file and metadata through `delete_document(document_id)`. This prevents a document from appearing in the admin list when it cannot be searched.
+
+### Query To Answer Data Flow
+
+The query flow starts when a user sends a chat message. `ask()` first checks for an empty string and returns fallback when the question has no content.
+
+For non-empty questions, the pipeline creates a validation LLM and calls `is_question_clear()`. The validation prompt is intentionally strict. It returns `True` only when the LLM response is exactly `YES`; every other response is treated as unclear.
+
+Clear questions are sent to the HR policy agent. The agent can call one tool, `search_hr_policy_with_context`, which retrieves the top matching policy chunks from Qdrant and returns each chunk with citation fields. The final model response is extracted from the LangChain agent messages.
+
+If the agent fails, returns an unexpected response shape, or returns an empty answer, `ask()` returns the fallback response.
+
+## 2. Chunking And Retrieval
+
+Documents are chunked with `RecursiveCharacterTextSplitter`.
+
+Current settings:
+
+```text
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 150
+TOP_K_RESULTS = 5
+```
+
+The chunk size is chosen to keep nearby policy conditions together. HR policies often place a rule, limit, exception, and eligibility condition in adjacent text or table rows. Very small chunks can separate those pieces and make answers less reliable.
+
+The overlap reduces boundary loss. If a paragraph or table explanation crosses a chunk boundary, overlap gives the retriever another chance to fetch enough context.
+
+The retriever uses Qdrant through LangChain:
+
+```python
+vector_store.as_retriever(search_kwargs={"k": 5})
+```
+
+Returning five chunks is a practical balance. It gives the model enough context for direct fact questions and structured policy lookups without sending too much loosely related text.
+
+### Stored Metadata
+
+Each loaded document stores metadata before chunking:
+
+```text
+document_id
+filename
+document_type
+source_type
+section
+page_number
+```
+
+`document_id` is the UUID generated for the Supabase metadata row. It connects Supabase and Qdrant. When a document is deleted, Qdrant points are removed by filtering on `metadata.document_id`.
+
+`filename` and `section` are used for citations. The system prompt requires citations in this format:
+
+```text
+[Source: Document Name — Section Name]
+```
+
+`page_number` is added for PDFs when loader metadata includes a page. For Markdown files, `section` is inferred from headings. TXT and DOCX files currently use `General`.
+
+### Why Qdrant Metadata Matters
+
+Qdrant does more than store embeddings. It also stores metadata payloads with each chunk. This project uses that metadata for:
+
+- citation formatting
+- document-level deletion
+- traceability from answer back to uploaded document
+
+The vector store creates a payload index on:
+
+```text
+metadata.document_id
+```
+
+That index is required for efficient filtered deletion.
+
+## 3. Grounding
+
+The assistant is designed to avoid policy invention. It should answer only when uploaded policy context directly supports the user's question.
+
+Grounding happens in several steps:
+
+1. Question validation rejects unclear, ambiguous, malformed, or incomplete questions before retrieval.
+2. The HR agent receives a system prompt that forbids outside knowledge and unsupported assumptions.
+3. The agent must use retrieved policy context from the Qdrant search tool.
+4. The prompt requires citations for factual claims.
+5. Empty or unsupported answers are converted to fallback.
+
+The system prompt also handles common policy risks. It tells the model not to treat absence of a prohibition as permission. It also says that related concepts are not enough. A policy about fitness equipment, for example, should not automatically answer a question about a personal home gym expense unless the retrieved policy explicitly supports that exact conclusion.
+
+### Expected Behaviors
+
+For a direct fact question, the assistant should return the exact value and cite the specific source.
+
+Example:
+
+```text
+Question: What is the casual leave carry-forward limit?
+Expected: The correct number, with a citation.
+```
+
+For a structured policy or table lookup, the assistant should identify the relevant row and column, answer the specific cell, and cite the table source.
+
+Example:
+
+```text
+Question: Does the Standard health tier cover dental implants?
+Expected: The value from the Standard row and Dental implants column, with a citation.
+```
+
+For an unknown, unclear, or weakly supported question, the assistant should not guess. It should return fallback and point the user to HR.
+
+Example:
+
+```text
+Question: Can I expense a personal home gym?
+Expected: Fallback unless the retrieved policy directly answers that exact question.
+```
+
+The fallback response is:
+
+```text
+I couldn't find enough information in the available HR policies to answer that. Please contact HR.
+```
+
+## 4. Schema And APIs
+
+The project does not expose a public HTTP API. The schemas below are internal Python boundaries and service record shapes.
+
+### Upload Request
+
+The Streamlit upload flow calls:
+
+```python
+add_uploaded_document(
+    filename=uploaded_file.name,
+    file_bytes=uploaded_file.getvalue(),
+)
+```
+
+This schema keeps Streamlit-specific objects out of the pipeline. The pipeline only needs stable primitives: a file name and bytes.
+
+### Upload Response
+
+The upload pipeline returns the Supabase metadata dictionary:
+
+```python
+{
+    "id": "document UUID",
+    "filename": "policy.pdf",
+    "storage_path": "documents/<document_id>/policy.pdf",
+    "file_type": ".pdf",
+    "file_size": 123456,
+    "uploaded_at": "ISO timestamp",
+}
+```
+
+This shape supports admin listing, deletion, and the connection between storage records and Qdrant vectors.
+
+### Supabase Documents Table
+
+The app expects a `documents` table with:
+
+```text
+id
+filename
+storage_path
+file_type
+file_size
+uploaded_at
+```
+
+The `id` is the shared document identifier. It appears in Supabase metadata and in Qdrant chunk metadata.
+
+### Qdrant Payload
+
+Each Qdrant chunk stores the text vector plus metadata similar to:
+
+```python
+{
+    "metadata": {
+        "document_id": "<document_id>",
+        "filename": "policy.pdf",
+        "document_type": ".pdf",
+        "source_type": "admin_upload",
+        "section": "Page 1",
+        "page_number": 1,
+    },
+    "page_content": "policy chunk text"
+}
+```
+
+The exact Qdrant storage shape is handled by LangChain's `QdrantVectorStore`, but these are the meaningful application fields.
+
+### Question Validation Request
+
+Before retrieval, `ask()` calls:
+
+```python
+is_question_clear(validation_llm, question)
+```
+
+The validation LLM receives a prompt that asks for only one word:
+
+```text
+YES
+```
+
+or:
+
+```text
+NO
+```
+
+Only an exact `YES` allows the question to reach the HR agent. This schema is intentionally strict because ambiguous questions should not be repaired or guessed.
+
+### Agent Request
+
+Clear questions are sent to the LangChain agent as messages:
+
+```python
+{
+    "messages": [
+        {
+            "role": "user",
+            "content": question,
+        }
+    ]
+}
+```
+
+The message shape matches LangChain's agent interface and leaves room for future conversation history.
+
+### Search Tool Response
+
+The retriever tool returns plain text blocks:
+
+```text
+SOURCE 1
+Citation: Benefits Policy.md — Health coverage tiers
+Document: Benefits Policy.md
+Section: Health coverage tiers
+Document ID: <document_id>
+
+Content:
+<retrieved policy text>
+```
+
+Plain text is easy for the model to consume, while the labels make citation fields clear.
+
+### Final Answer
+
+The final app-level response is a Markdown string:
+
+```python
+"The Standard health tier does not cover dental implants. [Source: Benefits Policy — Health coverage tiers]"
+```
+
+Markdown is used because Streamlit renders it directly, and policy answers often need bullets, tables, short headings, and inline citations.
+
+## 5. Trade-Offs
+
+### Qdrant And Supabase Instead Of Local Storage
+
+A local vector index and local file storage are easy for early experiments, but they do not fit the current app requirements. The admin needs durable uploaded files, a document list, deletion, and a retrievable vector store with metadata filtering.
+
+Supabase was chosen for file storage and metadata. Qdrant was chosen for vector search and document-level vector deletion. This separates original document storage from semantic retrieval.
+
+### Synchronous Upload Indexing Instead Of Background Jobs
+
+The current implementation indexes during the Streamlit upload request. This is simple and gives immediate success or failure feedback.
+
+The rejected alternative is asynchronous indexing through a queue. A queue would improve responsiveness, retry behavior, and large-file handling, but it would also add worker infrastructure and status tracking. For this project stage, synchronous indexing keeps the system easier to reason about.
+
+### Strict Question Validation Instead Of Lenient Interpretation
+
+The pipeline now validates questions before retrieval. This rejects vague prompts such as "Is this covered?" or "What about gym?" instead of guessing the user's intent from keywords.
+
+The trade-off is that some short but understandable user questions may be rejected. The benefit is safer HR behavior: unclear questions do not reach retrieval and cannot produce confident but unsupported policy answers.
+
+### 1000 Character Chunks Instead Of Very Small Chunks
+
+Very small chunks can improve narrow matching, but they can split policy rules from their exceptions or limits. Very large chunks preserve context but may dilute retrieval precision.
+
+The current `1000` character chunk size with `150` overlap is a middle ground. It keeps related HR policy text together while allowing Qdrant to return several relevant chunks.
+
+### Empty Model Answer Plus App Fallback
+
+The system prompt asks the model to return an empty answer when context is insufficient. The application then converts empty answers into a user-facing fallback message.
+
+This keeps the model prompt focused on evidence and keeps the user experience friendly. The rejected alternative is asking the model to explain every refusal, which can accidentally include unsupported policy reasoning.
+
+## 6. If There Were Two More Weeks
+
+The first hardening priority would be evaluation. The app needs a small test set covering direct facts, table lookups, ambiguous questions, off-policy questions, weak retrieval, and citation correctness.
+
+The second priority would be authentication and authorization. Upload and delete actions should be admin-only, and user access should be tied to company identity. Supabase permissions and service role usage should be tightened before production deployment.
+
+The third priority would be ingestion quality. PDF tables, scanned PDFs, DOCX section headings, and complex policy tables need more reliable extraction. This matters for HR policies where a single answer can depend on a table cell.
+
+The fourth priority would be asynchronous indexing. Large documents should be processed in the background with progress status, retries, and clear failure states.
+
+The fifth priority would be observability and feedback. The app should log retrieved chunk IDs, validation decisions, fallback reasons, and user feedback so retrieval quality and prompt behavior can be improved safely.
+
+The sixth priority would be admin tooling. Admins should be able to inspect indexed documents, re-index a document, see chunk counts, and verify that citations point to the expected sections.

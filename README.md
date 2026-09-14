@@ -1,21 +1,29 @@
 # HR Assistant
 
-HR Assistant is a document-backed policy question-answering app for internal HR documents. It lets an admin upload HR policy files, indexes their contents into a vector database, and answers employee questions using only retrieved policy context.
+HR Assistant is a Streamlit-based internal policy assistant. It lets an admin upload HR policy documents, indexes those documents into Qdrant, and answers employee questions using only retrieved policy context.
 
-The current application uses Streamlit for the UI, Supabase for uploaded document storage and metadata, Qdrant for vector search, Jina embeddings for document embeddings, and Groq-hosted chat models through LangChain.
+The active application stack is:
+
+- Streamlit for the web UI
+- Supabase Storage for uploaded policy files
+- Supabase Postgres for document metadata
+- Qdrant for vector search
+- Jina embeddings for document embeddings
+- Groq and LangChain for the HR policy agent
 
 ## Features
 
 - Upload HR documents from the Streamlit sidebar.
-- Supports `.pdf`, `.docx`, `.txt`, and `.md` files up to 20 MB.
+- Supports `.pdf`, `.docx`, `.txt`, and `.md` files.
+- Rejects files larger than 20 MB.
 - Stores uploaded files in Supabase Storage.
 - Stores document metadata in a Supabase `documents` table.
-- Splits uploaded documents into retrievable chunks.
-- Indexes chunks in Qdrant with citation metadata.
-- Lets users ask HR policy questions through a chat interface.
-- Forces answers to stay grounded in retrieved policy context.
-- Displays human-readable source citations in the generated Markdown answer.
-- Deletes uploaded documents from both Supabase and Qdrant.
+- Loads, chunks, embeds, and indexes uploaded documents into Qdrant.
+- Searches the top matching policy chunks for each clear user question.
+- Validates questions before retrieval to reject unclear or malformed prompts.
+- Answers only from retrieved policy context.
+- Returns a fallback response when the question is unclear, retrieval is weak, or the model cannot produce a supported answer.
+- Deletes documents from Qdrant, Supabase Storage, and Supabase metadata.
 
 ## Project Structure
 
@@ -24,7 +32,9 @@ HR-Assistant/
 ├── app.py
 ├── main.py
 ├── init_DB.py
-├── requirement.txt
+├── requirements.txt
+├── README.md
+├── DESIGN.md
 ├── .env
 ├── .gitignore
 ├── assistant/
@@ -42,9 +52,36 @@ HR-Assistant/
 │   └── vector_store.py
 ├── data/
 │   └── benefits-policy.md
-├── rag.ipynb
-└── ragenv/
+└── rag.ipynb
 ```
+
+## How It Works
+
+### Upload And Index
+
+1. An admin uploads a supported document in the Streamlit sidebar.
+2. The UI checks the file size limit.
+3. `assistant.pipeline.add_uploaded_document()` uploads the raw file to Supabase Storage.
+4. Supabase metadata is inserted into the `documents` table.
+5. The uploaded bytes are loaded into LangChain document objects.
+6. Metadata is attached to each document object.
+7. Documents are split into chunks.
+8. Chunks are embedded with Jina embeddings.
+9. Chunk vectors and metadata are stored in Qdrant.
+10. The cached assistant is cleared so the next query uses the updated knowledge base.
+
+### Query And Answer
+
+1. A user asks a question in the Streamlit chat input.
+2. `assistant.pipeline.ask()` strips and validates the question.
+3. A validation LLM decides whether the question is clear enough to process.
+4. Unclear, ambiguous, empty, or malformed questions return the fallback response immediately.
+5. Clear questions are sent to the HR agent.
+6. The HR agent calls the `search_hr_policy_with_context` tool.
+7. The tool retrieves the top matching chunks from Qdrant.
+8. The model answers only from the retrieved context.
+9. Empty or unsupported answers are converted to the fallback response.
+10. Streamlit renders the final Markdown answer.
 
 ## Main Files
 
@@ -52,236 +89,188 @@ HR-Assistant/
 
 Streamlit web application. It provides:
 
-- page setup and app title
-- admin sidebar for upload and delete actions
-- uploaded document list
-- cached assistant initialization
-- chat history in `st.session_state`
-- chat input and answer rendering
-
-The app calls the pipeline functions from `assistant/pipeline.py` to upload, index, remove, list, build, and query documents.
+- page setup and title
+- admin sidebar
+- upload flow
+- document list
+- delete flow
+- cached assistant initialization through `st.cache_resource`
+- chat history through `st.session_state`
+- chat input and Markdown answer rendering
 
 ### `main.py`
 
-Command-line demo entry point. It builds the HR assistant and asks a few hardcoded sample questions:
-
-- `How many paid annual leave days do I get?`
-- `What is the notice period during probation?`
-- `Can I work from home every day?`
-
-Use this file when you want to test the assistant outside the Streamlit UI.
+CLI demo entry point. It builds the HR assistant and asks three hardcoded sample questions. Use it for a quick local command-line smoke test after the app is configured and at least one document is indexed.
 
 ### `assistant/pipeline.py`
 
-Central orchestration layer. It connects the document storage, loader, splitter, vector store, retriever, LLM, and agent.
+Central orchestration layer.
 
 Important functions:
 
-- `add_uploaded_document()` uploads a file to Supabase, loads it, chunks it, and indexes it in Qdrant.
-- `remove_document()` deletes a document from Qdrant and Supabase.
-- `get_all_documents()` retrieves Supabase metadata records.
-- `build_hr_assistant()` validates configuration, loads Qdrant, creates a retriever, creates the search tool, initializes the LLM, and builds the LangChain agent.
-- `ask()` sends a user question to the agent and returns the final answer.
+- `add_uploaded_document(filename, file_bytes)`: uploads, loads, chunks, embeds, and indexes a document.
+- `remove_document(document_id)`: deletes vectors first, then deletes the Supabase file and metadata.
+- `get_all_documents()`: lists document metadata from Supabase.
+- `build_hr_assistant()`: validates config, loads Qdrant, builds the retriever, creates the tool, initializes the LLM, and creates the agent.
+- `is_question_clear(llm, question)`: uses a strict validation prompt and returns `True` only for an exact `YES`.
+- `ask(agent, question)`: validates the input, rejects unclear questions, invokes the HR agent, extracts the final answer, and applies fallback behavior.
 
 ### `assistant/config.py`
 
-Loads configuration from environment variables first, then from Streamlit secrets if available.
+Loads configuration from environment variables first and Streamlit secrets second.
 
 It defines:
 
-- API keys
-- Supabase settings
-- Qdrant settings
+- Groq and Jina API keys
+- Supabase URL, service role key, and bucket name
+- Qdrant URL, API key, and collection name
 - LLM model name
 - embedding model name
-- chunking settings
-- retriever top-k value
-- strict HR assistant system prompt
+- chunk size and overlap
+- retriever `top_k`
+- strict HR policy system prompt
 
-The system prompt tells the assistant to answer only from retrieved policy context, return Markdown, and cite sources using this format:
+Current model and retrieval settings:
 
 ```text
-[Source: Document Name — Section Name]
+LLM model: openai/gpt-oss-20b
+Embedding model: jina-embeddings-v2-base-en
+Chunk size: 1000
+Chunk overlap: 150
+Top retrieved chunks: 5
 ```
+
+The system prompt requires the assistant to answer only from retrieved policy context, cite factual claims, avoid policy invention, and return an empty answer when context is insufficient.
 
 ### `assistant/doc_loader.py`
 
-Loads uploaded document bytes into LangChain document objects.
+Loads uploaded bytes into LangChain documents.
 
-Supported file types:
+Supported loaders:
 
-- PDF through `PyPDFLoader`
-- DOCX through `Docx2txtLoader`
-- TXT through `TextLoader`
-- Markdown through `TextLoader`
+- `.pdf`: `PyPDFLoader`
+- `.docx`: `Docx2txtLoader`
+- `.txt`: `TextLoader`
+- `.md`: `TextLoader`
 
-It also attaches metadata used later for citations, including:
+Attached metadata:
 
 - `document_id`
 - `filename`
 - `document_type`
 - `source_type`
 - `section`
-- `page_number` for PDFs
+- `page_number` for PDFs when available
 
-For Markdown files, the section is inferred from the latest Markdown heading in the loaded text.
+Markdown sections are inferred from the latest Markdown heading in the text. PDF sections are represented as page labels. TXT and DOCX currently use `General`.
 
 ### `assistant/splitters.py`
 
-Splits loaded documents using `RecursiveCharacterTextSplitter`.
-
-Current defaults from `assistant/config.py`:
-
-- chunk size: `1000`
-- chunk overlap: `150`
+Splits LangChain documents with `RecursiveCharacterTextSplitter` using the configured chunk size and overlap.
 
 ### `assistant/embeddings.py`
 
-Creates the embedding model.
-
-Current model:
-
-```text
-jina-embeddings-v2-base-en
-```
+Creates the Jina embedding model used by the Qdrant vector store.
 
 ### `assistant/vector_store.py`
 
-Handles Qdrant vector database operations.
+Handles Qdrant operations:
 
-It can:
+- creates a Qdrant client
+- checks whether the collection exists
+- creates a payload index on `metadata.document_id`
+- builds a collection from chunks
+- loads an existing collection
+- adds document chunks
+- deletes all vectors for one document
+- creates a retriever
+- deletes the entire collection
 
-- create a Qdrant client
-- check whether the collection exists
-- create a payload index for `metadata.document_id`
-- build a new Qdrant collection from chunks
-- load an existing collection
-- add new document chunks
-- delete all vectors for one document
-- create a retriever
-- delete the entire vector collection
-
-The payload index is important because document deletion filters Qdrant points by `metadata.document_id`.
+The `metadata.document_id` payload index supports document-level vector deletion.
 
 ### `assistant/tools.py`
 
-Creates the LangChain tool used by the agent.
+Creates the LangChain search tool.
 
-The tool searches the retriever and returns matching chunks with:
+The tool retrieves matching chunks and formats each result with:
 
 - source number
 - citation
 - document name
-- section
+- section name
 - document ID
-- content
-
-The agent uses this returned context to produce grounded HR answers.
+- retrieved content
 
 ### `assistant/llm.py`
 
-Creates the chat model through Groq.
-
-Current model from config:
-
-```text
-openai/gpt-oss-20b
-```
-
-Temperature is set to `0.1` for more deterministic answers.
+Creates the Groq chat model with temperature `0`.
 
 ### `assistant/agent.py`
 
-Creates the LangChain agent using:
-
-- the configured LLM
-- the HR policy search tool
-- the strict system prompt from `assistant/config.py`
+Creates the LangChain HR agent using the configured LLM, the HR policy search tool, and the system prompt from `assistant/config.py`.
 
 ### `assistant/supabase_storage.py`
 
-Handles Supabase Storage and database metadata.
+Handles Supabase file and metadata operations:
 
-It can:
-
-- create the Supabase client
-- upload document bytes into Supabase Storage
-- insert document metadata into the `documents` table
-- list uploaded documents
-- retrieve one document metadata record
+- create Supabase client
+- validate supported extensions and size
+- upload file bytes to Supabase Storage
+- insert metadata into the `documents` table
+- list documents
+- fetch one document
 - download a stored document
-- delete both the storage object and metadata record
+- delete a storage object and metadata row
 
-If metadata insertion fails after file upload, the code attempts to roll back the uploaded storage object.
+If Supabase metadata insertion fails after storage upload, the code attempts to remove the uploaded storage object.
 
 ### `assistant/logger.py`
 
-Provides a simple stdout logger with this format:
-
-```text
-timestamp - logger_name - level - message
-```
+Creates stdout loggers for the project.
 
 ### `init_DB.py`
 
-Utility script intended to reset Qdrant collection data. The file currently has blank Qdrant credentials inside the script, so it should be updated to read from environment variables before use.
+Utility script intended to reset Qdrant data. It currently has blank credentials inside the file, so it should be updated to read from environment variables before use.
 
 ### `data/benefits-policy.md`
 
-Sample HR policy document covering:
-
-- health coverage tiers
-- leave travel allowance
-- wellness benefits
-- exclusions
-- HR benefits contact
+Sample HR policy document used for local testing or ingestion examples.
 
 ### `rag.ipynb`
 
-Prototype notebook for local RAG experimentation. It is not part of the active Streamlit application path.
-
-The production Streamlit flow uses Qdrant for vector search and Supabase for file storage and document metadata.
-
-### `ragenv/`
-
-Local Python virtual environment. It is ignored by Git and should not be committed.
-
-## How The App Works
-
-1. An admin uploads an HR document from the Streamlit sidebar.
-2. The file is validated for type and size.
-3. The file is uploaded to Supabase Storage.
-4. Metadata is inserted into the Supabase `documents` table.
-5. The uploaded bytes are loaded into LangChain document objects.
-6. Documents are split into overlapping chunks.
-7. Chunks are embedded with Jina embeddings.
-8. Chunks and metadata are stored in Qdrant.
-9. The assistant creates a retriever over the Qdrant collection.
-10. User questions are passed to a LangChain agent.
-11. The agent calls the HR policy search tool.
-12. The final answer is generated only from retrieved policy context.
+Prototype notebook. It is not part of the active Streamlit application path.
 
 ## Requirements
 
 Python 3.10 or newer is recommended.
 
-Install the Python dependencies from the provided file:
+Install dependencies:
 
 ```bash
-pip install -r requirement.txt
+pip install -r requirements.txt
 ```
 
-Depending on your environment and loader usage, you may also need packages used indirectly by loaders and storage code, such as:
+The active app depends on:
 
-```bash
-pip install supabase pypdf docx2txt
-```
+- `streamlit`
+- `langchain`
+- `langchain-core`
+- `langchain-community`
+- `langchain-groq`
+- `langchain-qdrant`
+- `qdrant-client`
+- `langchain-text-splitters`
+- `jinaai`
+- `supabase`
+- `pypdf`
+- `python-docx`
+- `python-dotenv`
 
 ## Environment Variables
 
-Create a `.env` file in the project root for local development.
+Create a `.env` file in the project root for local development, or configure the same values in Streamlit secrets.
 
-Required variables:
+Required:
 
 ```env
 GROQ_API_KEY=
@@ -292,23 +281,23 @@ QDRANT_URL=
 QDRANT_API_KEY=
 ```
 
-Optional variables:
+Optional:
 
 ```env
 SUPABASE_BUCKET_NAME=hr-documents
 QDRANT_COLLECTION_NAME=hr_documents
 ```
 
-The existing `.env` file is ignored by Git. Do not commit real service keys.
+Do not commit real service keys.
 
 ## Supabase Setup
 
 The app expects:
 
-- a Supabase Storage bucket, default name `hr-documents`
+- a Supabase Storage bucket, default `hr-documents`
 - a Supabase table named `documents`
 
-A compatible `documents` table should include at least:
+The `documents` table should include:
 
 ```text
 id
@@ -319,90 +308,82 @@ file_size
 uploaded_at
 ```
 
-The app uses the Supabase service role key because it performs server-side storage and metadata operations.
+The app uses the Supabase service role key for server-side storage and metadata operations.
 
 ## Qdrant Setup
 
-The app expects a reachable Qdrant instance and a configured collection name.
+The app expects a reachable Qdrant instance.
 
-If the collection does not exist, it is created when the first uploaded document is indexed. The app also creates a payload index on:
+The collection name defaults to:
+
+```text
+hr_documents
+```
+
+If the collection does not exist, it is created during the first successful document index operation. The app also creates a payload index on:
 
 ```text
 metadata.document_id
 ```
 
-That index is used to delete all vectors belonging to a removed document.
+That payload index is used when deleting all vectors for one uploaded document.
 
-## Running The Streamlit App
-
-From the project root:
+## Run The Streamlit App
 
 ```bash
 streamlit run app.py
 ```
 
-Open the local Streamlit URL shown in the terminal.
+First-time flow:
 
-Typical first-time flow:
-
-1. Add the required environment variables.
+1. Add environment variables.
 2. Start Streamlit.
-3. Upload an HR document from the sidebar.
-4. Wait for upload and indexing to complete.
-5. Ask a policy question in the chat input.
+3. Upload a supported HR document.
+4. Wait for indexing.
+5. Ask a clear policy question in the chat.
 
-## Running The CLI Demo
-
-From the project root:
+## Run The CLI Demo
 
 ```bash
 python main.py
 ```
 
-This builds the assistant and runs the sample questions in `main.py`.
+The CLI demo requires valid configuration and an existing indexed Qdrant collection.
 
-## Notes And Current Limitations
+## Fallback Behavior
 
-- The app will not start the assistant until a Qdrant collection exists.
-- The Streamlit UI displays a startup message when no HR documents have been uploaded yet.
-- Unsupported file types are rejected.
-- Files larger than 20 MB are rejected.
-- The assistant is intentionally conservative. If retrieved policy context is not enough, the system prompt instructs it to return an empty answer.
-- `ask()` only applies the fallback message when the agent returns an empty response.
-- `init_DB.py` should be made environment-based before using it to reset Qdrant.
-- The file `assistant/_init_.py` is empty and appears to be named with single underscores. A conventional package initializer would be `assistant/__init__.py`.
-- `rag.ipynb` appears to be a prototype artifact and is not part of the active Streamlit application path.
+The user receives this fallback response when:
 
-## Troubleshooting
+- the question is empty
+- the validation LLM marks the question unclear
+- validation fails operationally
+- the HR agent fails
+- the agent response cannot be parsed
+- the final answer is empty
+- retrieved policy context is insufficient
 
-### Missing configuration values
+```text
+I couldn't find enough information in the available HR policies to answer that. Please contact HR.
+```
 
-If startup fails with missing configuration values, make sure all required environment variables are present in `.env` or Streamlit secrets.
+## Notes And Limitations
 
-### No HR documents uploaded
-
-Upload at least one supported HR document from the sidebar. The assistant needs indexed document chunks before it can answer questions.
-
-### Upload succeeds but indexing fails
-
-The pipeline attempts to roll back the Supabase upload when indexing fails. Check:
-
-- Qdrant URL and API key
-- Jina API key
-- document file type
-- readable document text
-- network access to external services
-
-### Delete fails
-
-Deletion removes vectors from Qdrant before deleting Supabase storage and metadata. Check that the Qdrant payload index for `metadata.document_id` exists and that the Supabase service role key has the required permissions.
+- The assistant cannot answer until at least one document has been indexed in Qdrant.
+- Upload/indexing is synchronous inside the Streamlit request.
+- Question validation makes one additional LLM call before the policy agent call.
+- TXT and DOCX files currently use `General` as the section name.
+- PDF citations use page-based section names.
+- Markdown section extraction is simple and based on headings.
+- The grounding policy is intentionally strict, so some related questions may fall back instead of receiving a guessed answer.
+- `assistant/_init_.py` appears to be a placeholder file. A conventional Python package initializer would be `assistant/__init__.py`.
 
 ## Possible Improvements
 
-- Rename `requirement.txt` to the conventional `requirements.txt`.
-- Add missing direct dependencies such as `supabase`, `pypdf`, and `docx2txt` to the dependency file if they are required in the target environment.
-- Replace `assistant/_init_.py` with `assistant/__init__.py`.
-- Update `init_DB.py` to use `assistant.config` instead of hardcoded blank credentials.
-- Add automated tests for upload rollback, document deletion, loader metadata, and fallback behavior.
-- Add a setup script or SQL migration for the Supabase `documents` table.
-- Add a small health-check page for Supabase, Qdrant, Groq, and Jina connectivity.
+- Add tests for upload rollback, question validation, retrieval fallback, and document deletion.
+- Move upload indexing to a background job with retry and progress state.
+- Add authentication and authorization for admin actions.
+- Add Supabase migrations for the `documents` table.
+- Improve section extraction for DOCX and PDF documents.
+- Improve PDF table extraction for structured benefits policies.
+- Add answer evaluation sets for direct facts, table lookups, unknown questions, and citation quality.
+- Add health checks for Supabase, Qdrant, Jina, and Groq.
